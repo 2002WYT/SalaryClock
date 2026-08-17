@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
 from app.core.config import load_config, save_config
 from app.core.holiday_provider import HolidayProvider
 from app.core.holiday_worker import HolidayFetchWorker
+from app.core.calendar_model import count_legal_workdays
 from app.core import calculator
 from app.ui.calendar_widget import WorkCalendarWidget
 from app.ui.time_group_editor import TimeGroupEditor
@@ -38,6 +39,10 @@ class MainWindow(QMainWindow):
         self.holidays_provider = HolidayProvider()
         self._holiday_thread = None
         self._holiday_worker = None
+        # 待拉取队列：拉取期间又请求了别的年份时，记下最后一个，等当前线程
+        # 真正结束后再补拉（避免并发拉取互相打架，也避免 quit 后 isRunning 仍为真的竞态）。
+        self._pending_fetch = None  # (year, silent) 或 None
+        self._holiday_fetch_silent = False  # 当前/最近一次拉取是否静默（不弹框/不碰按钮）
         # 运行中浮窗的引用（由 main.py 在启动/关闭时设置）；用于双向同步
         self.float_window = None
         # 同步互斥：避免主窗口↔浮窗相互回写控件值造成信号递归
@@ -217,7 +222,8 @@ class MainWindow(QMainWindow):
         # ---- 公式说明 ----
         hint = QLabel(
             "计算方式：日薪 = 月薪 ÷ 当月法定工作日；秒薪 = 日薪 ÷ 每日总工时（秒）。\n"
-            "法定工作日由「日期」页日历自动统计，工时由「工作时间」页填写。"
+            "法定工作日固定按「今天所在月」统计（含国庆等法定节假日与调休），"
+            "翻看日历其他月份不影响秒薪；工时由「工作时间」页填写。"
         )
         hint.setObjectName("hint")
         hint.setWordWrap(True)
@@ -239,7 +245,7 @@ class MainWindow(QMainWindow):
         self.btn_update_holidays = QPushButton("联网更新节假日")
         self.btn_update_holidays.clicked.connect(self._on_update_holidays)
         row.addWidget(self.btn_update_holidays)
-        self.lbl_workdays = QLabel("本月法定工作日：--")
+        self.lbl_workdays = QLabel("当页法定工作日：--")
         self.lbl_workdays.setObjectName("resultLabel")
         row.addWidget(self.lbl_workdays)
         row.addStretch()
@@ -555,63 +561,129 @@ class MainWindow(QMainWindow):
 
     # ---------------- 节假日 ----------------
     def _refresh_holidays_silent(self):
-        y = self.calendar.yearShown()
-        if self.holidays_provider.has_cache(y):
-            self.calendar.set_holidays(self.holidays_provider.get_holidays(y))
+        """启动时静默就绪节假日数据。
+
+        优先确保「今天所在年」可用——秒薪按今天所在月计算，必须用到今天
+        所在年的节假日（国庆/调休等）。无缓存则后台静默拉取，完成后
+        _on_holiday_fetched 会刷新日历并 recompute 修正秒薪。
+        再尝试给日历当前显示页年份上色（有缓存即用）。"""
+        today = dt.date.today()
+        self._ensure_holidays(today.year, silent=True)
+        shown_y = self.calendar.yearShown()
+        if shown_y != today.year:
+            # 显示页与今天不同年（如跨年重开）：也补一份，排入待拉队列
+            self._ensure_holidays(shown_y, silent=True)
+        if self.holidays_provider.has_cache(shown_y):
+            self.calendar.set_holidays(self.holidays_provider.get_holidays(shown_y))
         else:
             self.calendar.set_holidays({})
-            self.statusBar().showMessage("未获取节假日数据，点击「联网更新节假日」", 8000)
         self._update_workdays_label()
 
     def _on_calendar_page_changed(self):
+        """翻月：只为日历上色与「当页法定工作日」标签服务。
+
+        秒薪固定按今天所在月算，这里【不】调用 _recompute——翻月绝不应
+        改变秒薪（用户可随时翻看别月的工作日而不影响当前薪水显示）。"""
         y = self.calendar.yearShown()
         if self.holidays_provider.has_cache(y):
             self.calendar.set_holidays(self.holidays_provider.get_holidays(y))
         else:
             self.calendar.set_holidays({})
+            self._ensure_holidays(y, silent=True)  # 无缓存则静默拉取，完成后补色
         self._update_workdays_label()
-        self._recompute()
 
-    def _on_update_holidays(self):
+    def _ensure_holidays(self, year: int, *, silent: bool):
+        """确保某年节假日可用：有缓存直接返回；无缓存则后台异步拉取。"""
+        if self.holidays_provider.has_cache(year):
+            return
+        self._fetch_holidays_async(year, silent=silent)
+
+    def _fetch_holidays_async(self, year: int, *, silent: bool):
+        """后台拉取某年节假日。已有拉取在跑则排入待拉队列（只记最后一个）。"""
         if self._holiday_thread is not None and self._holiday_thread.isRunning():
-            return  # 已在拉取中，避免重复
-        y = self.calendar.yearShown()
-        self.btn_update_holidays.setEnabled(False)
-        self.btn_update_holidays.setText("更新中…")
-        self.statusBar().showMessage(f"正在联网获取 {y} 年节假日…")
-        QApplication.processEvents()
+            self._pending_fetch = (year, silent)
+            return
+        self._start_holiday_fetch(year, silent=silent)
 
-        self._holiday_worker = HolidayFetchWorker(y, self.holidays_provider)
+    def _start_holiday_fetch(self, year: int, *, silent: bool):
+        """真正创建 worker/thread 并启动一次拉取。"""
+        self._holiday_fetch_silent = silent
+        if not silent:
+            self.btn_update_holidays.setEnabled(False)
+            self.btn_update_holidays.setText("更新中…")
+            self.statusBar().showMessage(f"正在联网获取 {year} 年节假日…")
+            QApplication.processEvents()
+
+        self._holiday_worker = HolidayFetchWorker(year, self.holidays_provider)
         self._holiday_thread = QThread()
         self._holiday_worker.moveToThread(self._holiday_thread)
         self._holiday_thread.started.connect(self._holiday_worker.run)
         self._holiday_worker.finished.connect(self._on_holiday_fetched)
         self._holiday_worker.finished.connect(self._holiday_thread.quit)
+        # 线程真正结束后再处理待拉队列：避免 quit() 后 isRunning 仍为真的竞态
+        self._holiday_thread.finished.connect(self._on_thread_finished)
         self._holiday_thread.start()
 
+    def _on_thread_finished(self):
+        """拉取线程结束：清理引用，并按需补拉队列里最后一个待拉年份。"""
+        self._holiday_thread = None
+        self._holiday_worker = None
+        pending = self._pending_fetch
+        self._pending_fetch = None
+        if pending is not None:
+            py, ps = pending
+            if not self.holidays_provider.has_cache(py):
+                self._start_holiday_fetch(py, silent=ps)
+
+    def _on_update_holidays(self):
+        """手动点击「联网更新节假日」：强制刷新当前显示页年份（即便有缓存也重拉）。"""
+        y = self.calendar.yearShown()
+        self._fetch_holidays_async(y, silent=False)
+
     def _on_holiday_fetched(self, mapping, ok, msg):
-        self.btn_update_holidays.setEnabled(True)
-        self.btn_update_holidays.setText("联网更新节假日")
+        silent = self._holiday_fetch_silent
+        if not silent:
+            self.btn_update_holidays.setEnabled(True)
+            self.btn_update_holidays.setText("联网更新节假日")
         if ok:
-            self.calendar.set_holidays(mapping)
+            # 用「日历当前显示页年份」的缓存重新上色：刚拉取的年份若正是显示页则立即生效
+            shown_y = self.calendar.yearShown()
+            if self.holidays_provider.has_cache(shown_y):
+                self.calendar.set_holidays(self.holidays_provider.get_holidays(shown_y))
             self._update_workdays_label()
-            self._recompute()
+            self._recompute()  # 今天所在年节假日已就绪，重算秒薪（按今天所在月）
             self.statusBar().showMessage(msg, 5000)
         else:
             self.statusBar().showMessage(msg, 6000)
-        QMessageBox.information(self, "节假日更新", msg)
-        # 清理 worker
-        self._holiday_worker = None
+        if not silent:
+            QMessageBox.information(self, "节假日更新", msg)
 
     def _update_workdays_label(self):
+        """日历下方的「当页法定工作日」标签——反映日历当前显示页（非今天所在月）。"""
         n = self.calendar.legal_workdays_of_current_page()
-        self.lbl_workdays.setText(f"本月法定工作日：{n} 天")
+        y = self.calendar.yearShown()
+        m = self.calendar.monthShown()
+        self.lbl_workdays.setText(f"{y} 年 {m} 月法定工作日：{n} 天")
 
     # ---------------- 计算 ----------------
+    def _legal_workdays_for_today(self) -> int:
+        """秒薪计算用：今天所在月的法定工作日。
+
+        固定取「今天」的年/月，与日历当前显示页【无关】——用户翻到别的月份
+        不会改变秒薪。节假日用今天所在年的数据：有缓存即用；无缓存暂按
+        「仅周末」判断（降级），自动拉取完成后 _on_holiday_fetched 会 recompute
+        修正。这里绝不同步联网（会卡 UI）。"""
+        today = dt.date.today()
+        if self.holidays_provider.has_cache(today.year):
+            holidays = self.holidays_provider.get_holidays(today.year)
+        else:
+            holidays = {}
+        return count_legal_workdays(today.year, today.month, holidays)
+
     def _recompute(self):
         salary = self.spin_salary.value()
         groups = self.editor.get_time_groups()
-        legal = self.calendar.legal_workdays_of_current_page()
+        legal = self._legal_workdays_for_today()
         r = calculator.compute_all(salary, legal, groups)
         self.lbl_daily.setText(f"日薪：{calculator.format_money_short(r['daily_salary'])}")
         self.lbl_hours.setText(
@@ -635,7 +707,7 @@ class MainWindow(QMainWindow):
         """校验输入并组装 payload，失败返回 None（已弹提示）。"""
         salary = self.spin_salary.value()
         groups = self.editor.get_time_groups()
-        legal = self.calendar.legal_workdays_of_current_page()
+        legal = self._legal_workdays_for_today()
         if salary <= 0:
             QMessageBox.warning(self, "无法启动", "请先填写月薪。"); return None
         if legal <= 0:
@@ -671,6 +743,8 @@ class MainWindow(QMainWindow):
 
     def _truly_quit(self):
         self._persist()
+        # 清掉待拉队列，避免退出时 _on_thread_finished 又启动新拉取线程
+        self._pending_fetch = None
         if self._holiday_thread is not None and self._holiday_thread.isRunning():
             self._holiday_thread.quit(); self._holiday_thread.wait(2000)
         QApplication.quit()
