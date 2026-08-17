@@ -161,24 +161,6 @@ SalaryClock/
 
 ---
 
-## 提交至 GitHub
-
-```bash
-# 初始化仓库并首次提交
-git init
-git add .
-git commit -m "秒薪浮窗 v0.0.1 首次提交"
-
-# 关联远程仓库（先在 GitHub 上新建空仓库 SalaryClock）
-git branch -M main
-git remote add origin https://github.com/2002WYT/SalaryClock.git
-git push -u origin main
-```
-
-> 发布 Release 时建议把 `dist\SalaryClock.exe` 作为 Release 附件上传，方便不会装 Python 的用户直接下载使用。
-
----
-
 ## 已知限制（v0.0.1）
 
 - 跨午夜班次的「今日已赚」初始值为近似估算，运行中累计为精确值。
