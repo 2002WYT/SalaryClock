@@ -1,0 +1,31 @@
+{
+  "version": "0.0.1",
+  "theme": "midnight",
+  "monthly_salary": 0.0,
+  "time_groups": [
+    {"name": "上午", "periods": [{"start": "09:00", "end": "12:00"}]},
+    {"name": "下午", "periods": [{"start": "13:30", "end": "18:00"}]}
+  ],
+  "selected_year": null,
+  "selected_month": null,
+  "float": {
+    "opacity": 0.92,
+    "font_size": 30,
+    "font_family": "Microsoft YaHei",
+    "always_on_top": true,
+    "locked": false,
+    "pos_x": null,
+    "pos_y": null,
+    "width": 260,
+    "height": 132,
+    "theme": "f_dark_green",
+    "count_only_during_work": true,
+    "show_today_earnings": true
+  },
+  "settings": {
+    "default_legal_workdays": 21.75,
+    "auto_start": false,
+    "minimize_to_tray": true,
+    "close_behavior": "tray"
+  }
+}
