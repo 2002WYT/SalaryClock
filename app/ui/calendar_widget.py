@@ -9,7 +9,9 @@ from PySide6.QtGui import QTextCharFormat, QColor, QFont
 from PySide6.QtWidgets import QCalendarWidget, QTableView
 
 import datetime as dt
-
+# 非当前月份日期
+OUTSIDE_MONTH_BG = "#1B1E26"
+OUTSIDE_MONTH_FG = "#596170"
 from app.core.calendar_model import (
     month_dates_with_status, STATUS_COLORS, count_legal_workdays,
     TODAY_BG, TODAY_FG, TODAY_POINT_SIZE,
@@ -76,18 +78,57 @@ class WorkCalendarWidget(QCalendarWidget):
         return self.yearShown(), self.monthShown()
 
     # ---- internal ----
-    def _on_page_changed(self):
-        self._apply_formats(self.yearShown(), self.monthShown())
+    def _on_page_changed(self, year: int, month: int):
+        self._apply_formats(year, month)
 
     def _apply_formats(self, year: int, month: int) -> None:
         today = dt.date.today()
-        for d, status, name in month_dates_with_status(year, month, self._holidays):
+
+        # ------------------------------------------------
+        # 1. 先清除之前所有日期留下的特殊格式
+        # ------------------------------------------------
+        # QDate() 是空日期，Qt 会清除所有 setDateTextFormat 设置的格式
+        self.setDateTextFormat(QDate(), QTextCharFormat())
+
+        # ------------------------------------------------
+        # 2. 找到上一个月和下一个月
+        # ------------------------------------------------
+        current_first = QDate(year, month, 1)
+        prev_first = current_first.addMonths(-1)
+        next_first = current_first.addMonths(1)
+
+        # ------------------------------------------------
+        # 3. 上一个月、下一个月全部设成暗色
+        # ------------------------------------------------
+        outside_fmt = QTextCharFormat()
+        outside_fmt.setBackground(QColor(OUTSIDE_MONTH_BG))
+        outside_fmt.setForeground(QColor(OUTSIDE_MONTH_FG))
+        outside_fmt.setFontPointSize(9)
+
+        for first in (prev_first, next_first):
+            days = first.daysInMonth()
+
+            for day in range(1, days + 1):
+                qd = QDate(first.year(), first.month(), day)
+                self.setDateTextFormat(qd, outside_fmt)
+
+        # ------------------------------------------------
+        # 4. 当前月份重新按照实际状态上色
+        # ------------------------------------------------
+        for d, status, name in month_dates_with_status(
+            year, month, self._holidays
+        ):
             qd = QDate(d.year, d.month, d.day)
+
             fmt = QTextCharFormat()
-            bg, fg = STATUS_COLORS.get(status, STATUS_COLORS["workday"])
+
+            bg, fg = STATUS_COLORS.get(
+                status,
+                STATUS_COLORS["workday"]
+            )
+
             if d == today:
-                # 今天：用独立醒目底色（覆盖状态底色）+ 白字 + 加粗放大字号，
-                # 让「今天在哪一天」在任意月份都一眼可辨，美观且突出。
+                # 今天优先级最高
                 fmt.setBackground(QColor(TODAY_BG))
                 fmt.setForeground(QColor(TODAY_FG))
                 fmt.setFontWeight(QFont.Bold)
@@ -96,4 +137,10 @@ class WorkCalendarWidget(QCalendarWidget):
             else:
                 fmt.setBackground(QColor(bg))
                 fmt.setForeground(QColor(fg))
+
             self.setDateTextFormat(qd, fmt)
+
+        # ------------------------------------------------
+        # 5. 强制日历重新绘制
+        # ------------------------------------------------
+        self.updateCells()

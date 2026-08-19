@@ -238,7 +238,9 @@ class MainWindow(QMainWindow):
         self.calendar = WorkCalendarWidget()
         self.calendar.currentPageChanged.connect(self._on_calendar_page_changed)
         lay.addWidget(self.calendar, 1)
-        self.lbl_legend = QLabel("色块：默认=工作日 · 灰色=周末 · 红色=节假日 · 橙色=调休上班")
+        self.lbl_legend = QLabel(
+    "色块：灰色=工作日 · 绿色=休息 · 深绿=法定节假日 · 红色=调休上班 · 蓝色=今天"
+)
         self.lbl_legend.setObjectName("hint")
         lay.addWidget(self.lbl_legend)
         row = QHBoxLayout()

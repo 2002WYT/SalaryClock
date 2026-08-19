@@ -19,11 +19,11 @@ import requests
 from app.core.config import CACHE_PATH
 
 HOLIDAY_CN_URL = (
-    "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{year}.json"
-)
-# 国内镜像兜底（raw.githubusercontent.com 偶尔不稳定）
-HOLIDAY_CN_MIRROR_URL = (
     "https://cdn.jsdelivr.net/gh/NateScarlet/holiday-cn@master/{year}.json"
+)
+
+HOLIDAY_CN_MIRROR_URL = (
+    "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/{year}.json"
 )
 
 
