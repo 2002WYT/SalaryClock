@@ -102,15 +102,15 @@ class FloatWindow(QWidget):
         lay.setContentsMargins(14, 10, 14, 10)
         lay.setSpacing(2)
 
-        self.lbl_salary = QLabel()
-        self.lbl_salary.setObjectName("salaryLabel")
-        self.lbl_salary.setAlignment(Qt.AlignCenter)
-        lay.addWidget(self.lbl_salary)
-
         self.lbl_today = QLabel()
-        self.lbl_today.setObjectName("subLabel")
+        self.lbl_today.setObjectName("salaryLabel")
         self.lbl_today.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.lbl_today)
+
+        self.lbl_salary = QLabel()
+        self.lbl_salary.setObjectName("subLabel")
+        self.lbl_salary.setAlignment(Qt.AlignCenter)
+        lay.addWidget(self.lbl_salary)
 
         self.lbl_status = QLabel()
         self.lbl_status.setObjectName("statusLabel")
